@@ -21,7 +21,14 @@ from tqdm.auto import tqdm
 
 from dataset import EOS_TOKEN, PAD_TOKEN, SOS_TOKEN, Multi30kDataset
 from lr_scheduler import NoamScheduler
-from model import MultiHeadAttention, Transformer, make_src_mask, make_tgt_mask
+from model import (
+    DEFAULT_CHECKPOINT_PATH,
+    MultiHeadAttention,
+    Transformer,
+    _checkpoint_candidates,
+    make_src_mask,
+    make_tgt_mask,
+)
 
 
 class LabelSmoothingLoss(nn.Module):
@@ -267,6 +274,9 @@ def evaluate_bleu(
     """
     Evaluate translation quality with corpus-level BLEU score.
     """
+    if hasattr(model, "_ensure_checkpoint_loaded"):
+        model._ensure_checkpoint_loaded()
+
     pad_idx = _vocab_index(tgt_vocab, PAD_TOKEN, 1)
     sos_idx = _vocab_index(tgt_vocab, SOS_TOKEN, 2)
     eos_idx = _vocab_index(tgt_vocab, EOS_TOKEN, 3)
@@ -338,11 +348,20 @@ def load_checkpoint(
     """
     Restore model and optionally optimizer/scheduler state from disk.
     """
+    checkpoint_path = Path(path)
+    if not checkpoint_path.exists():
+        checkpoint_path = next(
+            (candidate for candidate in _checkpoint_candidates() if candidate.exists()),
+            DEFAULT_CHECKPOINT_PATH,
+        )
+
     try:
-        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     except TypeError:
-        checkpoint = torch.load(path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(checkpoint["model_state_dict"])
+    if hasattr(model, "_inference_checkpoint_loaded"):
+        model._inference_checkpoint_loaded = True
 
     optimizer_state = checkpoint.get("optimizer_state_dict")
     if optimizer is not None and optimizer_state is not None:
@@ -356,7 +375,7 @@ def load_checkpoint(
 
 
 def download_checkpoint_from_gdrive(
-    file_id: str = "1rXyhzh_9ozSHLu0uPwi_R7U0Tgqoi73n",
+    file_id: str = "1QgXMaPSIDr0V-878LguTUhzbzB21_CPD",
     output_path: str = "checkpoints/best_bleu_checkpoint.pt",
 ) -> None:
     """
@@ -408,6 +427,7 @@ def _parse_cli_args() -> dict:
     parser = argparse.ArgumentParser(description="Train the DA6401 assignment 3 Transformer")
     parser.add_argument("--task-name", default=None)
     parser.add_argument("--num-epochs", default=None, type=int)
+    parser.add_argument("--extra-epochs", default=None, type=int)
     parser.add_argument("--checkpoint-dir", default=None)
     parser.add_argument("--best-checkpoint", default=None)
     parser.add_argument("--resume-checkpoint", default=None)
@@ -449,6 +469,7 @@ def run_training_experiment(overrides: Optional[dict] = None) -> None:
         "seed": _env("SEED", 42, int),
         "batch_size": _env("BATCH_SIZE", 32, int),
         "num_epochs": overrides.get("num_epochs", _env("NUM_EPOCHS", 20, int)),
+        "extra_epochs": overrides.get("extra_epochs", _env("EXTRA_EPOCHS", 0, int)),
         "d_model": _env("D_MODEL", 256, int),
         "N": _env("NUM_LAYERS", 3, int),
         "num_heads": _env("NUM_HEADS", 8, int),
@@ -462,7 +483,6 @@ def run_training_experiment(overrides: Optional[dict] = None) -> None:
         "checkpoint_dir": overrides.get("checkpoint_dir", os.getenv("CHECKPOINT_DIR", "checkpoints")),
         "best_checkpoint": overrides.get("best_checkpoint", os.getenv("BEST_CHECKPOINT", "checkpoint.pt")),
         "resume_checkpoint": overrides.get("resume_checkpoint", os.getenv("RESUME_CHECKPOINT", "")),
-        "extra_epochs": _env("EXTRA_EPOCHS", 0, int),
         "task_name": overrides.get("task_name", _env("TASK_NAME", "baseline", str)),
         "lr_strategy": overrides.get("lr_strategy", os.getenv("LR_STRATEGY", "noam")),
         "learning_rate": overrides.get("learning_rate", _env("LEARNING_RATE", 1e-4, float)),
@@ -559,7 +579,7 @@ def run_training_experiment(overrides: Optional[dict] = None) -> None:
     # Download checkpoint from Google Drive if it doesn't exist
     best_checkpoint_path = str(best_path)
     download_checkpoint_from_gdrive(
-        file_id="1rXyhzh_9ozSHLu0uPwi_R7U0Tgqoi73n",
+        file_id="1QgXMaPSIDr0V-878LguTUhzbzB21_CPD",
         output_path=best_checkpoint_path,
     )
 
